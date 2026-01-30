@@ -2,43 +2,26 @@ Deno.serve(async (req) => {
   const url = new URL(req.url);
   const targetUrl = url.searchParams.get("url");
 
-  // 1. 만약 파라미터에 url이 없으면, 현재 경로를 타겟의 상대 경로로 간주함 (핵심!)
+  // url 파라미터가 없으면 에러 메시지 출력
   if (!targetUrl) {
-    // 세션이나 쿠키에 저장된 이전 타겟 주소가 없다면 에러 리턴
-    return new Response("사용법: ?url=https://target.com");
+    return new Response("사용법: https://본인주소/send_to?url=https://docs.google.com");
   }
 
   try {
-    const target = new URL(targetUrl);
+    // 1. 서버가 타겟 페이지에 대신 접속함
+    const response = await fetch(targetUrl);
     
-    // 2. 타겟 서버에 대신 요청을 보냄 (브라우저처럼 보이게 헤더 조작)
-    const proxyRes = await fetch(targetUrl, {
-      method: req.method,
+    // 2. 응답받은 데이터(Body)를 아무 수정 없이 브라우저에 그대로 던져줌
+    // (이렇게 해야 브라우저가 원래 사이트의 자원을 자연스럽게 불러올 확률이 높습니다)
+    return new Response(response.body, {
+      status: response.status,
       headers: {
-        "User-Agent": req.headers.get("user-agent") || "Mozilla/5.0",
-        "Accept": req.headers.get("accept") || "*/*",
-      }
-    });
-
-    const contentType = proxyRes.headers.get("content-type") || "";
-    let body;
-
-    // 3. HTML인 경우에만 경로를 우리 서버 주소로 강제 치환
-    if (contentType.includes("text/html")) {
-      let text = await proxyRes.text();
-      // 모든 상대 경로(/)를 (우리서버/?url=타겟/경로) 형태로 바꿔서 디자인 파일을 가로챔
-      text = text.replace(/(src|href)="\/([^"]*)"/g, `$1="${url.origin}/?url=${target.origin}/$2"`);
-      body = text;
-    } else {
-      // 이미지, CSS 등은 그대로 전달
-      body = proxyRes.body;
-    }
-
-    return new Response(body, {
-      status: proxyRes.status,
-      headers: { "content-type": contentType }
+        "content-type": response.headers.get("content-type") || "text/html; charset=utf-8",
+        // 보안 정책(CORS)을 일시적으로 허용하여 깨짐 최소화 시도
+        "Access-Control-Allow-Origin": "*",
+      },
     });
   } catch (e) {
-    return new Response("Proxy Error: " + e.message, { status: 500 });
+    return new Response("접속 실패: " + e.message, { status: 500 });
   }
 });
