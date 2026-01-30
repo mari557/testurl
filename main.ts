@@ -7,26 +7,27 @@ Deno.serve(async (req) => {
   }
 
   try {
-    const originUrl = new URL(targetUrl);
     const response = await fetch(targetUrl, {
-      headers: { "User-Agent": "Mozilla/5.0" } // 실제 브라우저처럼 보이게 설정
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      }
     });
 
     const contentType = response.headers.get("content-type") || "";
-    
-    // HTML인 경우 내부의 상대 경로를 절대 경로로 치환하여 디자인 깨짐 방지
+
     if (contentType.includes("text/html")) {
       let html = await response.text();
-      // 이미지, CSS, JS 경로 뒤에 타겟 주소를 붙여서 인식하게 함
-      html = html.replaceAll('src="/', `src="${originUrl.origin}/`);
-      html = html.replaceAll('href="/', `href="${originUrl.origin}/`);
-      
+      const origin = new URL(targetUrl).origin;
+
+      // <head> 바로 뒤에 <base> 태그를 삽입하여 모든 상대 경로를 타겟 서버로 강제 매칭
+      const baseTag = `<base href="${origin}/">`;
+      html = html.replace("<head>", `<head>${baseTag}`);
+
       return new Response(html, {
         headers: { "content-type": "text/html; charset=utf-8" }
       });
     }
 
-    // 그 외 파일(이미지 등)은 그대로 전달
     return new Response(response.body, {
       status: response.status,
       headers: response.headers,
