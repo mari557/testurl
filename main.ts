@@ -2,37 +2,43 @@ Deno.serve(async (req) => {
   const url = new URL(req.url);
   const targetUrl = url.searchParams.get("url");
 
+  // 1. 만약 파라미터에 url이 없으면, 현재 경로를 타겟의 상대 경로로 간주함 (핵심!)
   if (!targetUrl) {
+    // 세션이나 쿠키에 저장된 이전 타겟 주소가 없다면 에러 리턴
     return new Response("사용법: ?url=https://target.com");
   }
 
   try {
-    const response = await fetch(targetUrl, {
+    const target = new URL(targetUrl);
+    
+    // 2. 타겟 서버에 대신 요청을 보냄 (브라우저처럼 보이게 헤더 조작)
+    const proxyRes = await fetch(targetUrl, {
+      method: req.method,
       headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "User-Agent": req.headers.get("user-agent") || "Mozilla/5.0",
+        "Accept": req.headers.get("accept") || "*/*",
       }
     });
 
-    const contentType = response.headers.get("content-type") || "";
+    const contentType = proxyRes.headers.get("content-type") || "";
+    let body;
 
+    // 3. HTML인 경우에만 경로를 우리 서버 주소로 강제 치환
     if (contentType.includes("text/html")) {
-      let html = await response.text();
-      const origin = new URL(targetUrl).origin;
-
-      // <head> 바로 뒤에 <base> 태그를 삽입하여 모든 상대 경로를 타겟 서버로 강제 매칭
-      const baseTag = `<base href="${origin}/">`;
-      html = html.replace("<head>", `<head>${baseTag}`);
-
-      return new Response(html, {
-        headers: { "content-type": "text/html; charset=utf-8" }
-      });
+      let text = await proxyRes.text();
+      // 모든 상대 경로(/)를 (우리서버/?url=타겟/경로) 형태로 바꿔서 디자인 파일을 가로챔
+      text = text.replace(/(src|href)="\/([^"]*)"/g, `$1="${url.origin}/?url=${target.origin}/$2"`);
+      body = text;
+    } else {
+      // 이미지, CSS 등은 그대로 전달
+      body = proxyRes.body;
     }
 
-    return new Response(response.body, {
-      status: response.status,
-      headers: response.headers,
+    return new Response(body, {
+      status: proxyRes.status,
+      headers: { "content-type": contentType }
     });
   } catch (e) {
-    return new Response("접속 오류: " + e.message, { status: 500 });
+    return new Response("Proxy Error: " + e.message, { status: 500 });
   }
 });
