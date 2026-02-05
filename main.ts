@@ -1,44 +1,53 @@
 Deno.serve(async (req) => {
   const url = new URL(req.url);
-  const encodedUrl = url.searchParams.get("url");
+  let targetUrl = url.searchParams.get("url");
 
-  // 1. 파라미터가 없으면 안내 메시지 출력
-  if (!encodedUrl) {
-    return new Response("사용법: ?url=[Base64_Encoded_URL]\n예: ?url=aHR0cHM6Ly93d3cubm90aW9uLnNv", { status: 400 });
+  // 1. 만약 파라미터에 url이 없는데 경로가 /_next/ 등인 경우 (이미지/자원 요청)
+  // 이전 요청 정보를 기반으로 노션 주소로 강제 연결 시도
+  if (!targetUrl && url.pathname.startsWith("/_next")) {
+    targetUrl = `https://www.notion.so${url.pathname}${url.search}`;
+  } else if (targetUrl && !targetUrl.startsWith("http")) {
+    // Base64인 경우 해독 (atob)
+    try { targetUrl = atob(targetUrl); } catch { /* 일반 문자열인 경우 통과 */ }
+  }
+
+  if (!targetUrl) {
+    return new Response("사용법: ?url=[Base64_Encoded_URL]");
   }
 
   try {
-    // 2. Base64 주소 복호화 (보안 장비의 키워드 필터링 우회)
-    const targetUrl = atob(encodedUrl);
     const originUrl = new URL(targetUrl);
-
-    // 3. 서버가 노션에 대신 접속
+    
+    // 2. 서버가 타겟에 대신 접속
     const response = await fetch(targetUrl, {
       headers: {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Referer": "https://www.notion.so/", // 노션이 자기 사이트인지 확인하므로 필요
       }
     });
 
     const contentType = response.headers.get("content-type") || "";
 
-    // 4. HTML 콘텐츠 처리 (상대 경로를 절대 경로로 치환하여 화면 깨짐 방지)
+    // 3. HTML 내부의 이미지/스크립트 경로를 우리 프록시 주소로 치환
     if (contentType.includes("text/html")) {
       let html = await response.text();
-      
-      // 정규식을 이용해 src, href의 상대 경로 앞에 노션 원본 주소를 삽입
-      html = html.replace(/(src|href)="\/([^"]*)"/g, `$1="${originUrl.origin}/$2"`);
+      // 모든 상대 경로를 [우리서버/?url=노션주소/경로] 형태로 세탁
+      html = html.replace(/(src|href)="\/([^"]*)"/g, `$1="${url.origin}/?url=${originUrl.origin}/$2"`);
       
       return new Response(html, {
         headers: { "content-type": "text/html; charset=utf-8" }
       });
     }
 
-    // 5. 기타 자원(JS, CSS, 이미지) 그대로 전달
+    // 4. 이미지나 기타 자원은 원본 그대로 전달
     return new Response(response.body, {
       status: response.status,
-      headers: response.headers,
+      headers: {
+        "content-type": contentType,
+        "Access-Control-Allow-Origin": "*",
+      }
     });
   } catch (e) {
-    return new Response("접속 또는 디코딩 오류: " + e.message, { status: 500 });
+    return new Response("리소스 중계 오류: " + e.message, { status: 500 });
   }
 });
