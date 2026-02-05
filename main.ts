@@ -6,7 +6,7 @@ Deno.serve(async (req) => {
   // 1. 파라미터가 없는 요청(이미지, API) 자동 경로 복원
   if (!targetUrl) {
     if (url.pathname.startsWith("/_next") || url.pathname.startsWith("/front-static") || url.pathname.startsWith("/front-api")) {
-      targetUrl = `https://www.notion.so${url.pathname}${fullSearch}`;
+      targetUrl = `https://www.upbit.com${url.pathname}${fullSearch}`;
     } else if (url.pathname.startsWith("/gsi/")) {
       // 구글 로그인 관련 자원 중계
       targetUrl = `https://accounts.google.com${url.pathname}${fullSearch}`;
@@ -25,7 +25,7 @@ Deno.serve(async (req) => {
       method: req.method,
       headers: {
         "User-Agent": req.headers.get("user-agent") || "Mozilla/5.0",
-        "Referer": "https://www.notion.so/",
+        "Referer": "https://www.www.upbit.com/",
       },
       body: req.body, // API 요청(POST 등) 시 데이터 전달을 위해 추가
     });
@@ -36,7 +36,7 @@ Deno.serve(async (req) => {
     if (contentType.includes("text/html")) {
       let html = await response.text();
       // 이미지/스크립트 등 상대 경로를 우리 서버 주소로 치환
-      html = html.replace(/(src|href)="\/([^"]*)"/g, `$1="${url.origin}/?url=https://www.notion.so/$2"`);
+      html = html.replace(/(src|href)="\/([^"]*)"/g, `$1="${url.origin}/?url=https://www.upbit.com/$2"`);
       return new Response(html, { headers: { "content-type": "text/html; charset=utf-8" } });
     }
 
