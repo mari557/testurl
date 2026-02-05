@@ -9,59 +9,70 @@ Deno.serve(async (req: Request) => {
   }
 
   try {
-    // 1. Base64로 암호화된 URL 디코딩
     const decodedUrl = Buffer.from(encodedUrl, "base64").toString("utf-8");
     const targetUrl = new URL(decodedUrl);
 
-    // 2. 타겟 사이트에 요청 (헤더 위조)
+    // 1. 요청 헤더 설정 (Cloudflare 차단 방지를 위해 최대한 브라우저처럼 위장)
     const requestHeaders = new Headers(req.headers);
     requestHeaders.set("Host", targetUrl.host);
     requestHeaders.set("Origin", targetUrl.origin);
     requestHeaders.set("Referer", targetUrl.origin);
-    requestHeaders.set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
 
     const response = await fetch(decodedUrl, {
       method: req.method,
       headers: requestHeaders,
+      body: req.method !== "GET" && req.method !== "HEAD" ? req.body : null,
       redirect: "manual",
     });
 
     const contentType = response.headers.get("Content-Type") || "";
     const responseHeaders = new Headers(response.headers);
-
-    // 3. 보안 정책 무력화
+    
+    // CORS 및 보안 헤더 해제
+    responseHeaders.set("Access-Control-Allow-Origin", "*");
     responseHeaders.delete("Content-Security-Policy");
     responseHeaders.delete("X-Frame-Options");
-    responseHeaders.set("Access-Control-Allow-Origin", "*");
 
-    // 4. HTML 내부의 모든 링크를 다시 Base64로 감싸서 전달 (핵심)
+    // 2. HTML 내부에 강력한 가로채기(Hooking) 스크립트 주입
     if (contentType.includes("text/html")) {
       let html = await response.text();
       const baseTag = `<base href="${targetUrl.origin}/">`;
       
-      // 화면 깨짐 방지를 위한 도메인 체크 우회 스크립트
-      const bypassScript = `
+      const hookScript = `
         <script>
-          // 모든 클릭 이벤트를 가로채서 목적지 주소를 Base64로 인코딩 후 프록시 전달
-          document.addEventListener('click', (e) => {
-            const link = e.target.closest('a');
-            if (link && link.href && !link.href.startsWith('javascript')) {
-              e.preventDefault();
-              const encoded = btoa(link.href);
-              window.location.href = window.location.origin + "/?url=" + encoded;
-            }
-          });
+          (function() {
+            // 1. 브라우저의 기본 fetch를 가로챔 (API 요청 우회 핵심)
+            const originalFetch = window.fetch;
+            window.fetch = async (...args) => {
+              let resource = args[0];
+              if (typeof resource === 'string' && (resource.includes('upbit.com') || resource.startsWith('/'))) {
+                const absoluteUrl = new URL(resource, '${targetUrl.origin}').href;
+                // 모든 API 요청을 다시 내 프록시 서버 주소로 변환
+                resource = window.location.origin + "/?url=" + btoa(absoluteUrl);
+              }
+              return originalFetch(resource, args[1]);
+            };
+
+            // 2. 모든 링크 클릭 시 Base64 인코딩 적용
+            document.addEventListener('click', (e) => {
+              const a = e.target.closest('a');
+              if (a && a.href && a.href.startsWith('http')) {
+                e.preventDefault();
+                window.location.href = window.location.origin + "/?url=" + btoa(a.href);
+              }
+            }, true);
+          })();
         </script>
       `;
 
-      html = html.replace("<head>", `<head>${baseTag}${bypassScript}`);
-      
+      html = html.replace("<head>", "<head>" + baseTag + hookScript);
       return new Response(html, { headers: responseHeaders });
     }
 
+    // 이미지, JS, CSS 등 리소스 중계
     return new Response(response.body, { status: response.status, headers: responseHeaders });
 
   } catch (e) {
-    return new Response("디코딩 또는 접속 오류: " + e.message, { status: 500 });
+    return new Response("업비트 접속 오류: " + e.message, { status: 500 });
   }
 });
