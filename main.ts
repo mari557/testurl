@@ -5,7 +5,7 @@ Deno.serve(async (req: Request) => {
   const encodedUrl = url.searchParams.get("url");
 
   if (!encodedUrl) {
-    return new Response("사용법: ?url=" + Buffer.from("https://www.upbit.com).toString("base64"));
+    return new Response("사용법: ?url=" + Buffer.from("https://www.upbit.com").toString("base64"));
   }
 
   try {
