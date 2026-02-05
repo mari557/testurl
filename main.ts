@@ -1,78 +1,48 @@
-import { Buffer } from "node:buffer";
+import puppeteer from "https://deno.land/x/puppeteer@16.2.0/mod.ts";
 
-Deno.serve(async (req: Request) => {
+Deno.serve(async (req) => {
   const url = new URL(req.url);
   const encodedUrl = url.searchParams.get("url");
 
   if (!encodedUrl) {
-    return new Response("사용법: ?url=" + Buffer.from("https://mail.naver.com").toString("base64"));
+    return new Response("사용법: ?url=aHR0cHM6Ly93d3cudXBiaXQuY29t");
   }
 
   try {
-    const decodedUrl = Buffer.from(encodedUrl, "base64").toString("utf-8");
-    const targetUrl = new URL(decodedUrl);
+    // 1. Base64 URL 디코딩
+    const targetUrl = atob(encodedUrl);
 
-    // 1. 요청 헤더 설정 (Cloudflare 차단 방지를 위해 최대한 브라우저처럼 위장)
-    const requestHeaders = new Headers(req.headers);
-    requestHeaders.set("Host", targetUrl.host);
-    requestHeaders.set("Origin", targetUrl.origin);
-    requestHeaders.set("Referer", targetUrl.origin);
-
-    const response = await fetch(decodedUrl, {
-      method: req.method,
-      headers: requestHeaders,
-      body: req.method !== "GET" && req.method !== "HEAD" ? req.body : null,
-      redirect: "manual",
+    // 2. 헤드리스 브라우저 실행
+    const browser = await puppeteer.launch({
+      headless: true,
+      args: ["--no-sandbox", "--disable-setuid-sandbox"],
     });
 
-    const contentType = response.headers.get("Content-Type") || "";
-    const responseHeaders = new Headers(response.headers);
+    const page = await browser.newPage();
+
+    // 3. 브라우저인 척 위장 (Fingerprint 우회 핵심)
+    await page.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
+    await page.setViewport({ width: 1920, height: 1080 });
+
+    // 4. 업비트 접속 및 대기 (JS가 실행될 시간 확보)
+    await page.goto(targetUrl, { waitUntil: "networkidle2" });
     
-    // CORS 및 보안 헤더 해제
-    responseHeaders.set("Access-Control-Allow-Origin", "*");
-    responseHeaders.delete("Content-Security-Policy");
-    responseHeaders.delete("X-Frame-Options");
+    // 필요 시 특정 요소가 나타날 때까지 대기
+    // await page.waitForSelector('.main_chart', { timeout: 5000 });
 
-    // 2. HTML 내부에 강력한 가로채기(Hooking) 스크립트 주입
-    if (contentType.includes("text/html")) {
-      let html = await response.text();
-      const baseTag = `<base href="${targetUrl.origin}/">`;
-      
-      const hookScript = `
-        <script>
-          (function() {
-            // 1. 브라우저의 기본 fetch를 가로챔 (API 요청 우회 핵심)
-            const originalFetch = window.fetch;
-            window.fetch = async (...args) => {
-              let resource = args[0];
-              if (typeof resource === 'string' && (resource.includes('upbit.com') || resource.startsWith('/'))) {
-                const absoluteUrl = new URL(resource, '${targetUrl.origin}').href;
-                // 모든 API 요청을 다시 내 프록시 서버 주소로 변환
-                resource = window.location.origin + "/?url=" + btoa(absoluteUrl);
-              }
-              return originalFetch(resource, args[1]);
-            };
+    // 5. 렌더링이 끝난 전체 HTML 가져오기
+    let content = await page.content();
 
-            // 2. 모든 링크 클릭 시 Base64 인코딩 적용
-            document.addEventListener('click', (e) => {
-              const a = e.target.closest('a');
-              if (a && a.href && a.href.startsWith('http')) {
-                e.preventDefault();
-                window.location.href = window.location.origin + "/?url=" + btoa(a.href);
-              }
-            }, true);
-          })();
-        </script>
-      `;
+    // 6. 내부 리소스 경로가 깨지지 않도록 <base> 태그 주입
+    const baseTag = `<base href="${new URL(targetUrl).origin}/">`;
+    content = content.replace("<head>", `<head>${baseTag}`);
 
-      html = html.replace("<head>", "<head>" + baseTag + hookScript);
-      return new Response(html, { headers: responseHeaders });
-    }
+    await browser.close();
 
-    // 이미지, JS, CSS 등 리소스 중계
-    return new Response(response.body, { status: response.status, headers: responseHeaders });
-
+    return new Response(content, {
+      headers: { "content-type": "text/html; charset=utf-8" },
+    });
   } catch (e) {
-    return new Response("업비트 접속 오류: " + e.message, { status: 500 });
+    return new Response("렌더링 오류: " + e.message, { status: 500 });
   }
 });
