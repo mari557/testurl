@@ -3,7 +3,28 @@ Deno.serve(async (req) => {
   const host = url.origin;
   const targetOrigin = "https://www.notion.so";
 
-  // [추가된 보정 로직] /_next/ 등 정적 자원 요청을 노션으로 직접 연결
+  // 1. [강화된 이미지 보정 로직] /_next/image 요청 처리
+  if (url.pathname.startsWith("/_next/image")) {
+    const targetImageUrl = url.searchParams.get("url");
+    if (targetImageUrl) {
+      // 상대 경로면 노션 주소를 붙이고, 절대 경로면 그대로 사용
+      const finalImageUrl = targetImageUrl.startsWith("/") 
+        ? `${targetOrigin}${targetImageUrl}` 
+        : targetImageUrl;
+      
+      const imgRes = await fetch(finalImageUrl, {
+        headers: { "User-Agent": req.headers.get("user-agent") || "" }
+      });
+      return new Response(imgRes.body, {
+        headers: { 
+          "content-type": imgRes.headers.get("content-type") || "image/png",
+          "access-control-allow-origin": "*" 
+        }
+      });
+    }
+  }
+
+  // 2. 기타 정적 자원 처리 (JS, CSS 등)
   if (url.pathname.startsWith("/_next/") || url.pathname.startsWith("/front-static/")) {
     const assetUrl = `${targetOrigin}${url.pathname}${url.search}`;
     return fetch(assetUrl, {
@@ -11,34 +32,6 @@ Deno.serve(async (req) => {
     });
   }
 
+  // 3. 메인 우회 접속 로직 (Base64)
   const targetEncoded = url.searchParams.get("url");
-  if (!targetEncoded) return new Response("URL 파라미터가 필요합니다.", { status: 400 });
-
-  let targetUrl = "";
-  try {
-    targetUrl = atob(targetEncoded);
-  } catch {
-    return new Response("잘못된 Base64 인코딩입니다.", { status: 400 });
-  }
-
-  try {
-    const response = await fetch(targetUrl, {
-      method: req.method,
-      headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-        "Referer": "https://www.notion.so/",
-        "Origin": "https://www.notion.so"
-      }
-    });
-
-    const contentType = response.headers.get("content-type") || "";
-
-    if (contentType.includes("text/html")) {
-      let html = await response.text();
-
-      // <base> 태그 삽입 (모든 상대 경로의 기준점을 노션으로 설정)
-      const baseTag = `<base href="${targetOrigin}/">`;
-      html = html.replace("<head>", `<head>${baseTag}`);
-
-      // 내부 링크 클릭 시 다시 우리 프록시를 타도록 보정
-      html = html.replaceAll
+  if (!targetEncoded) return new Response("URL 파라미터
