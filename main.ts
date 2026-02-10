@@ -1,54 +1,47 @@
-Deno.serve(async (req) => {
-  const url = new URL(req.url);
-  const fullSearch = url.search;
-  let targetUrl = url.searchParams.get("url");
+const puppeteer = require('puppeteer');
+const express = require('express');
+const app = express();
 
-  // 1. 파라미터가 없는 요청(이미지, API) 자동 경로 복원
-  if (!targetUrl) {
-    if (url.pathname.startsWith("/_next") || url.pathname.startsWith("/front-static") || url.pathname.startsWith("/front-api")) {
-      targetUrl = `https://www.notion.so${url.pathname}${fullSearch}`;
-    } else if (url.pathname.startsWith("/gsi/")) {
-      // 구글 로그인 관련 자원 중계
-      targetUrl = `https://accounts.google.com${url.pathname}${fullSearch}`;
-    }
-  } else {
+app.get('/proxy', async (req, res) => {
+    const encodedUrl = req.query.url;
+    if (!encodedUrl) return res.send('No URL provided');
+
+    // 1. Base64 URL 디코딩
+    const targetUrl = Buffer.from(encodedUrl, 'base64').toString('utf8');
+
+    const browser = await puppeteer.launch({ headless: true });
+    const page = await browser.newPage();
+
     try {
-      // Base64 해독 및 일반 주소 처리
-      if (!targetUrl.startsWith("http")) targetUrl = atob(targetUrl);
-    } catch { /* 일반 주소 유지 */ }
-  }
+        // 2. 대상 사이트(Notion) 접속
+        await page.goto(targetUrl, { waitUntil: 'networkidle2' });
 
-  if (!targetUrl) return new Response("인식할 수 없는 요청입니다.", { status: 400 });
+        // 3. 페이지 내 절대 경로 및 외부 자원을 현재 프록시 서버를 거치도록 치환
+        let content = await page.content();
+        
+        // 정적 자원(JS, CSS, CDN) 경로 보정
+        content = content.replace(/https:\/\/www\.notion\.so/g, `http://localhost:3000/proxy?url=${Buffer.from('https://www.notion.so').toString('base64')}`);
+        content = content.replace(/https:\/\/adora-cdn\.com/g, `http://localhost:3000/proxy?url=${Buffer.from('https://adora-cdn.com').toString('base64')}`);
+        
+        // 4. 링크 클릭 시 다시 Base64로 감싸서 요청하도록 스크립트 삽입 (Client-side)
+        const injectionScript = `
+            <script>
+                document.querySelectorAll('a').forEach(link => {
+                    link.onclick = (e) => {
+                        e.preventDefault();
+                        const target = btoa(link.href);
+                        window.location.href = '/proxy?url=' + target;
+                    };
+                });
+            </script>
+        `;
 
-  try {
-    const response = await fetch(targetUrl, {
-      method: req.method,
-      headers: {
-        "User-Agent": req.headers.get("user-agent") || "Mozilla/5.0",
-        "Referer": "https://www.notion.so/",
-      },
-      body: req.body, // API 요청(POST 등) 시 데이터 전달을 위해 추가
-    });
-
-    const contentType = response.headers.get("content-type") || "";
-
-    // HTML 중계 시 모든 도메인 자원을 우리 프록시로 유도
-    if (contentType.includes("text/html")) {
-      let html = await response.text();
-      // 이미지/스크립트 등 상대 경로를 우리 서버 주소로 치환
-      html = html.replace(/(src|href)="\/([^"]*)"/g, `$1="${url.origin}/?url=https://www.notion.so/$2"`);
-      return new Response(html, { headers: { "content-type": "text/html; charset=utf-8" } });
+        res.send(content + injectionScript);
+    } catch (error) {
+        res.status(500).send('Error loading page: ' + error.message);
+    } finally {
+        await browser.close();
     }
-
-    // 그 외 자원(이미지, API 응답) 전달
-    return new Response(response.body, {
-      status: response.status,
-      headers: { 
-        "content-type": contentType,
-        "Access-Control-Allow-Origin": "*" 
-      },
-    });
-  } catch (e) {
-    return new Response("중계 실패: " + e.message, { status: 500 });
-  }
 });
+
+app.listen(3000, () => console.log('Proxy server running on port 3000'));
