@@ -1,49 +1,54 @@
 Deno.serve(async (req) => {
   const url = new URL(req.url);
-  const host = url.origin;
-  const targetOrigin = "https://www.notion.so";
+  const fullSearch = url.search;
+  let targetUrl = url.searchParams.get("url");
 
-  // 1. 정적 자원(JS, 이미지, 폰트) 중계 로직
-  const isAsset = 
-    url.pathname.startsWith("/_next/") || 
-    url.pathname.startsWith("/front-static/") ||
-    /\.(js|css|woff2|png|jpg|jpeg|svg|gif|ico|json)$/.test(url.pathname);
-
-  if (isAsset) {
-    const nextImageUrl = url.searchParams.get("url");
-    let finalAssetUrl = (url.pathname.includes("/_next/image") && nextImageUrl)
-      ? (nextImageUrl.startsWith("/") ? `${targetOrigin}${nextImageUrl}` : nextImageUrl)
-      : `${targetOrigin}${url.pathname}${url.search}`;
-
-    try {
-      const assetRes = await fetch(finalAssetUrl, {
-        headers: {
-          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-          "Referer": "https://www.notion.so/",
-        }
-      });
-      const newHeaders = new Headers(assetRes.headers);
-      newHeaders.set("Access-Control-Allow-Origin", "*");
-      return new Response(assetRes.body, { headers: newHeaders });
-    } catch {
-      return new Response("Asset Error", { status: 502 });
+  // 1. 파라미터가 없는 요청(이미지, API) 자동 경로 복원
+  if (!targetUrl) {
+    if (url.pathname.startsWith("/_next") || url.pathname.startsWith("/front-static") || url.pathname.startsWith("/front-api")) {
+      targetUrl = `https://www.notion.so${url.pathname}${fullSearch}`;
+    } else if (url.pathname.startsWith("/gsi/")) {
+      // 구글 로그인 관련 자원 중계
+      targetUrl = `https://accounts.google.com${url.pathname}${fullSearch}`;
     }
+  } else {
+    try {
+      // Base64 해독 및 일반 주소 처리
+      if (!targetUrl.startsWith("http")) targetUrl = atob(targetUrl);
+    } catch { /* 일반 주소 유지 */ }
   }
 
-  // 2. 메인 페이지 접속 로직
-  const targetEncoded = url.searchParams.get("url");
-  
-  // [보정] 매개변수가 없는데 경로가 찍혀 들어오는 경우 대응
-  if (!targetEncoded) {
-    return new Response("매개변수가 유실되었습니다. 초기 주소로 접속하세요.", { status: 400 });
-  }
+  if (!targetUrl) return new Response("인식할 수 없는 요청입니다.", { status: 400 });
 
   try {
-    const targetUrl = atob(targetEncoded);
     const response = await fetch(targetUrl, {
-      headers: { "User-Agent": "Mozilla/5.0", "Referer": "https://www.notion.so/" }
+      method: req.method,
+      headers: {
+        "User-Agent": req.headers.get("user-agent") || "Mozilla/5.0",
+        "Referer": "https://www.notion.so/",
+      },
+      body: req.body, // API 요청(POST 등) 시 데이터 전달을 위해 추가
     });
 
-    let html = await response.text();
-    
-    // [핵심] 1. 브라우저의 모든 이동을 감
+    const contentType = response.headers.get("content-type") || "";
+
+    // HTML 중계 시 모든 도메인 자원을 우리 프록시로 유도
+    if (contentType.includes("text/html")) {
+      let html = await response.text();
+      // 이미지/스크립트 등 상대 경로를 우리 서버 주소로 치환
+      html = html.replace(/(src|href)="\/([^"]*)"/g, `$1="${url.origin}/?url=https://www.notion.so/$2"`);
+      return new Response(html, { headers: { "content-type": "text/html; charset=utf-8" } });
+    }
+
+    // 그 외 자원(이미지, API 응답) 전달
+    return new Response(response.body, {
+      status: response.status,
+      headers: { 
+        "content-type": contentType,
+        "Access-Control-Allow-Origin": "*" 
+      },
+    });
+  } catch (e) {
+    return new Response("중계 실패: " + e.message, { status: 500 });
+  }
+});
