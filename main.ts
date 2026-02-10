@@ -1,48 +1,41 @@
-const puppeteer = require('puppeteer');
 const express = require('express');
+const axios = require('axios');
 const app = express();
 
 app.get('/proxy', async (req, res) => {
     const encodedUrl = req.query.url;
-    if (!encodedUrl) return res.send('URL을 입력해주세요.');
+    if (!encodedUrl) return res.send('URL이 없습니다.');
 
+    // 1. Base64 디코딩
     const targetUrl = Buffer.from(encodedUrl, 'base64').toString('utf8');
-
-    // 브라우저 실행 (샌드박스 비활성화로 권한 이슈 방지)
-    const browser = await puppeteer.launch({ 
-        headless: "new",
-        args: ['--no-sandbox', '--disable-setuid-sandbox'] 
-    });
-    
-    const page = await browser.newPage();
+    const originUrl = new URL(targetUrl);
 
     try {
-        // [핵심] 모든 네트워크 요청을 가로채서 절대 경로를 유지하도록 설정
-        await page.setRequestInterception(true);
-        page.on('request', (request) => {
-            request.continue();
+        // 2. 실제 노션 페이지 데이터 가져오기 (User-Agent 설정으로 차단 방지)
+        const response = await axios.get(targetUrl, {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            }
         });
 
-        // 노션 페이지 접속 및 네트워크 안정화 대기
-        await page.goto(targetUrl, { 
-            waitUntil: 'networkidle0', // 네트워크 요청이 없을 때까지 대기하여 화면 깨짐 방지
-            timeout: 60000 
-        });
+        let html = response.data;
 
-        // 렌더링된 최종 결과물 가져오기
-        const content = await page.content();
+        // 3. [핵심 로직] 모든 상대 경로를 노션 절대 경로로 치환 (화면 깨짐 방지)
+        // src="/..." 또는 href="/..." 형태를 찾아 https://www.notion.so/... 로 변경합니다.
+        html = html.replace(/(src|href)="\/([^"]*)"/g, `$1="${originUrl.origin}/$2"`);
+        
+        // 4. 인라인 스타일 내의 url(/...) 형태도 치환
+        html = html.replace(/url\("\/(.*?)"\)/g, `url("${originUrl.origin}/$1")`);
 
-        // 1. 모든 상대 경로를 절대 경로(notion.so)로 치환하여 깨짐 방지
-        let fixedContent = content.replace(/(src|href)="\/([^/])/g, `$1="https://www.notion.so/$2`);
-
-        // 2. 외부 CDN 및 API 경로 보정
-        fixedContent = fixedContent.replace(/https:\/\/www\.notion\.so/g, `http://localhost:3000/proxy?url=${Buffer.from('https://www.notion.so').toString('base64')}`);
-
+        // 5. 결과 반환
         res.set('Content-Type', 'text/html');
-        res.send(fixedContent);
+        res.send(html);
 
     } catch (error) {
-        console.error(error);
-        res.status(500).send('페이지 로드 중 오류 발생: ' + error.message);
-    } finally {
-        //
+        res.status(500).send('에러 발생: ' + error.message);
+    }
+});
+
+app.listen(3000, () => {
+    console.log('브라우저에서 테스트: http://localhost:3000/proxy?url=' + Buffer.from('https://www.notion.so').toString('base64'));
+});
