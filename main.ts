@@ -3,31 +3,36 @@ Deno.serve(async (req) => {
   const host = url.origin;
   const targetOrigin = "https://www.notion.so";
 
-  // 1. [이미지/폰트/정적자원 통합 처리]
-  // _next/image, _next/static, front-static 등 모든 정적 자원 경로 대응
-  if (
+  // 1. [강력한 자원 중계 로직]
+  // 파일 확장자가 있거나, _next, front-static 경로인 경우 모두 가로채기
+  const isAsset = 
     url.pathname.startsWith("/_next/") || 
     url.pathname.startsWith("/front-static/") ||
-    url.pathname.includes(".woff2")
-  ) {
-    // _next/image의 경우 쿼리스트링의 url 파라미터를 확인
-    const nextImageUrl = url.searchParams.get("url");
+    /\.(js|css|woff2|png|jpg|jpeg|svg|gif|ico)$/.test(url.pathname);
+
+  if (isAsset) {
     let finalAssetUrl = "";
 
+    // Case A: _next/image 쿼리에 외부 URL이 섞인 경우 (ctfassets.net 등)
+    const nextImageUrl = url.searchParams.get("url");
     if (url.pathname.startsWith("/_next/image") && nextImageUrl) {
       finalAssetUrl = nextImageUrl.startsWith("/") 
         ? `${targetOrigin}${nextImageUrl}` 
         : nextImageUrl;
     } else {
-      // 일반적인 정적 자원은 노션 원본 주소와 결합
+      // Case B: 일반적인 내부 자원 (.js, .woff2 등)
       finalAssetUrl = `${targetOrigin}${url.pathname}${url.search}`;
     }
 
     try {
       const assetRes = await fetch(finalAssetUrl, {
-        headers: { "User-Agent": req.headers.get("user-agent") || "" }
+        headers: { 
+          "User-Agent": req.headers.get("user-agent") || "Mozilla/5.0",
+          "Referer": "https://www.notion.so/" 
+        }
       });
       
+      // 바이너리 데이터(이미지, 폰트) 보존을 위해 직접 응답 생성
       return new Response(assetRes.body, {
         headers: {
           "content-type": assetRes.headers.get("content-type") || "application/octet-stream",
@@ -39,17 +44,14 @@ Deno.serve(async (req) => {
     }
   }
 
-  // 2. [메인 페이지 접속 로직]
+  // 2. [메인 페이지 접속 및 HTML 보정]
   const targetEncoded = url.searchParams.get("url");
-  if (!targetEncoded) return new Response("접속할 URL(Base64)을 입력하세요.", { status: 400 });
+  if (!targetEncoded) return new Response("접속 주소(url=Base64)가 필요합니다.", { status: 400 });
 
   try {
     const targetUrl = atob(targetEncoded);
     const response = await fetch(targetUrl, {
-      headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-        "Referer": "https://www.notion.so/",
-      }
+      headers: { "User-Agent": "Mozilla/5.0", "Referer": "https://www.notion.so/" }
     });
 
     const contentType = response.headers.get("content-type") || "";
@@ -57,4 +59,9 @@ Deno.serve(async (req) => {
     if (contentType.includes("text/html")) {
       let html = await response.text();
       
-      // <base> 태그는 주소창
+      // <base> 태그로 브라우저 기본 경로를 노션으로 고정
+      const baseTag = `<base href="${targetOrigin}/">`;
+      html = html.replace("<head>", `<head>${baseTag}`);
+
+      // 페이지 내부 링크 클릭 시 우리 프록시를 계속 유지하게 만듦
+      const proxyPrefix = `${host}/send_
